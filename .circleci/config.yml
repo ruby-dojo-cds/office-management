@@ -1,0 +1,205 @@
+version: 2.1
+
+defaults: &defaults
+  working_directory: ~/workspace
+
+executors:
+  ruby-node-postgres:
+    docker:
+      - image: circleci/ruby:2.6.3-node
+        environment:
+          RAILS_ENV: test
+          NODE_ENV: test
+          PGHOST: 127.0.0.1
+          PGUSER: myapp
+          DISABLE_SPRING: true
+      - image: circleci/postgres:10-alpine-ram
+        environment:
+          POSTGRES_USER: myapp
+          POSTGRES_DB: password1
+  ruby-node:
+    docker:
+      - image: circleci/ruby:2.6.3-node
+        environment:
+          RAILS_ENV: test
+          NODE_ENV: test
+
+commands:
+  attach_repo_workspace:
+    steps:
+      - attach_workspace:
+          at: ~/workspace
+  save_ruby_cache:
+    parameters:
+      cache_key:
+        type: string
+    steps:
+      - save_cache:
+          key: << parameters.cache_key >>-{{ checksum "Gemfile.lock" }}
+          paths:
+            - vendor/bundle
+  restore_ruby_cache:
+    parameters:
+      cache_key:
+        type: string
+    steps:
+      - restore_cache:
+          key: << parameters.cache_key >>-{{ checksum "Gemfile.lock" }}
+  yarn_install:
+    steps:
+      - restore_cache:
+          key: yarn-cache-{{ checksum "yarn.lock" }}
+      - run: yarn install
+      - save_cache:
+          key: yarn-cache-{{ checksum "yarn.lock" }}
+          paths:
+            - node_modules
+
+jobs:
+  checkout:
+    executor:
+      name: ruby-node
+    steps:
+      - checkout:
+          path: ~/workspace
+      - persist_to_workspace:
+          root: ~/workspace
+          paths:
+            - ./*
+  build_ruby:
+    <<: *defaults
+    parameters:
+      ruby_gems_cache_key:
+        type: string
+        default: ruby-gems
+    executor:
+      name: ruby-node
+    steps:
+      - attach_repo_workspace
+      - restore_ruby_cache:
+          cache_key: << parameters.ruby_gems_cache_key >>
+      - run: bundle install --path vendor/bundle
+      - save_ruby_cache:
+          cache_key: << parameters.ruby_gems_cache_key >>
+
+  build_webpacker:
+    <<: *defaults
+    executor:
+      name: ruby-node
+    steps:
+      - attach_repo_workspace
+      - yarn_install
+      - restore_ruby_cache:
+          cache_key: ruby-gems
+      - run: bundle --path vendor/bundle
+      - run: bundle exec rails webpacker:compile
+      - persist_to_workspace:
+          root: ~/workspace
+          paths:
+            - public/packs-test/*
+  rubocop:
+    <<: *defaults
+    parameters:
+      ruby_gems_cache_key:
+        type: string
+        default: ruby-gems
+    executor:
+      name: ruby-node
+    steps:
+      - attach_repo_workspace
+      - restore_ruby_cache:
+          cache_key: << parameters.ruby_gems_cache_key >>
+      - run: bundle --path vendor/bundle
+      - run: bundle exec rubocop -P
+  test_ruby:
+    <<: *defaults
+    parameters:
+      ruby_gems_cache_key:
+        type: string
+        default: ruby-gems
+    executor:
+      name: ruby-node-postgres
+    steps:
+      - attach_repo_workspace
+      - restore_ruby_cache:
+          cache_key: << parameters.ruby_gems_cache_key >>
+      - run: bundle --path vendor/bundle
+      - run: bundle exec rails db:create
+      - run: bundle exec rails db:schema:load
+      - run: bundle exec rails test
+      # - run: bundle exec rails parallel:setup[2]
+      # - run: bundle exec rails parallel:test[2]
+  test_js:
+    <<: *defaults
+    executor:
+      name: ruby-node
+    steps:
+      - attach_repo_workspace
+      - restore_cache:
+          key: yarn-cache-{{ checksum "yarn.lock" }}
+      - run: yarn test
+
+  update_ruby:
+    <<: *defaults
+    executor:
+      name: ruby-node
+    steps:
+      - attach_repo_workspace
+      - run: bundle --path vendor/bundle
+      - run: bundle update
+      - save_ruby_cache:
+          cache_key: ruby-gems-updated
+      - persist_to_workspace:
+          root: ~/workspace
+          paths:
+            - Gemfile.lock
+  create-pr:
+    <<: *defaults
+    executor:
+      name: ruby-node
+    environment:
+      EMAIL: "jsanguinetti@codigodelsur.com"
+      GIT_AUTHOR_NAME: jsanguinetticds
+      GIT_COMMITTER_NAME: jsanguinetticds
+    steps:
+      - attach_repo_workspace
+      - run:
+          name: Keyscan Github (HACK)
+          command: ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+      - run: export NIGHTLY_UPDATE_BRANCH_ID=$(date +%s)
+      - run: git diff --quiet || (git checkout -b nightly-update-$NIGHTLY_UPDATE_BRANCH_ID && git commit -am "Updated gem versions in nightly update" && git push -u origin nightly-update-$NIGHTLY_UPDATE_BRANCH_ID)
+
+workflows:
+  build:
+    jobs:
+      - checkout
+      - build_ruby:
+          requires:
+            - checkout
+      - test_ruby:
+          requires:
+            - build_ruby
+  nightly-update:
+    jobs:
+      - checkout
+      - update_ruby:
+          requires:
+            - checkout
+      - test_ruby:
+          ruby_gems_cache_key: ruby-gems-updated
+          requires:
+            - update_ruby
+      - hold:
+          type: approval
+          requires:
+            - test_ruby
+      - create-pr:
+          requires:
+            - hold
+    triggers:
+      - schedule:
+          cron: "0 0 * * *"
+          filters:
+            branches:
+              only:
+                - master
