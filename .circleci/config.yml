@@ -176,9 +176,12 @@ workflows:
       - build_ruby:
           requires:
             - checkout
-      - test_ruby:
+      - rubocop:
           requires:
             - build_ruby
+      - test_ruby:
+          requires:
+            - rubocop
   nightly-update:
     jobs:
       - checkout
