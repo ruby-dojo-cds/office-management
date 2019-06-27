@@ -1,15 +1,14 @@
-development:
+default: &default
   adapter: postgresql
+  username: <%= ENV['DATABASE_USERNAME'] %>
+  password: <%= ENV['DATABASE_PASSWORD'] %>
   encoding: unicode
-  database: myapp_development
-  pool: 5
-  username: myapp
-  password: password1
+  pool:  <%= ENV['DATABASE_POOL_SIZE'] || 5 %>
+
+development:
+  <<: *default
+  database: office_management-development
 
 test:
-  adapter: postgresql
-  encoding: unicode
-  database: myapp_test
-  pool: 5
-  username: myapp
-  password: password1
+  <<: *default
+  database: office_management-test
